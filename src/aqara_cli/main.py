@@ -191,7 +191,7 @@ def rename(did, new_name, dry_run):
     """Rename a device (intent: config.device.name).
 
     Example:
-        aqara rename lumi.158d0008ab2b2d "Front Door Sensor"
+        aqara rename lumi.example1234abcd "Front Door Sensor"
     """
     if not new_name or not new_name.strip():
         raise click.BadParameter(
@@ -224,7 +224,7 @@ def move(did, position_id, dry_run):
     """Move a device to a different position/room.
 
     Example:
-        aqara move lumi.158d0008ab2b2d real2.1178496813997576192
+        aqara move lumi.example1234abcd real2.exampleRoomId
     """
     if dry_run:
         _json({
@@ -264,7 +264,7 @@ def room_rename(position_id, new_name, dry_run):
     returns 403 in practice.
 
     Example:
-        aqara room rename real2.1000992461178556416 "Living Room"
+        aqara room rename real2.exampleLivingRoom "Living Room"
     """
     if not new_name or not new_name.strip():
         raise click.BadParameter(

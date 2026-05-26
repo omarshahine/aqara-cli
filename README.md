@@ -45,10 +45,11 @@ think about it again.
    - **AppId** — alphanumeric.
    - **KeyId** — alphanumeric.
    - **AppKey** — under "Application key". Reveal it; copy the full string.
-4. Aqara may also ask you to add a **Redirect URI** for the OAuth web flow.
-   Add `http://localhost:8765/callback`. **You don't need this for the CLI's
-   default email-code flow** — only if you ever fall back to the browser
-   OAuth path. (See "Alternative auth path" below.)
+4. **Add a Redirect URI.** In your app settings, register
+   `http://localhost:8765/callback` as an authorized Redirect URI. The CLI's
+   default bootstrap flow (`aqara auth browser-flow`) needs this — the
+   alternative email-code flow is unreliable enough that we don't recommend
+   it. **Skip this step and the browser flow won't work.**
 5. Note the **region**. Each region has its own endpoint:
    - `usa` → `open-usa.aqara.com`  (default)
    - `cn`  → `open-cn.aqara.com`
@@ -204,17 +205,17 @@ automatically; nothing else needs to know.
 aqara homes
 aqara rooms
 aqara devices
-aqara device-status lumi.158d0008ab2b2d
+aqara device-status lumi.example1234abcd
 aqara scenes
 
 # Rename a device
-aqara rename lumi.158d0008ab2b2d "Front Door Sensor"
+aqara rename lumi.example1234abcd "Front Door Sensor"
 
 # Move a device to a different room
-aqara move lumi.158d0008ab2b2d real2.1178496813997576192
+aqara move lumi.example1234abcd real2.exampleRoomId
 
 # Manage rooms
-aqara room rename real2.1000992461178556416 "Living Room"
+aqara room rename real2.exampleLivingRoom "Living Room"
 aqara room create "Mudroom"        # under the default home
 aqara room delete real2.foo        # API refuses if devices still present
 
@@ -236,7 +237,7 @@ For any intent the CLI doesn't wrap yet:
 ```bash
 aqara call query.position.info --data '{"pageNum":1,"pageSize":50}'
 aqara call config.auth.refreshToken
-aqara call -v query.device.subInfo --data '{"did":"lumi.158d0008ab2b2d"}'
+aqara call -v query.device.subInfo --data '{"did":"lumi.example1234abcd"}'
 ```
 
 Pass `-v` to print the outbound request (URL + headers minus secrets).
