@@ -12,11 +12,21 @@ singular-`positionId` delete) are baked into the wrapper.
 
 ## Install
 
+### Homebrew (recommended on macOS)
+
+```bash
+brew install omarshahine/tap/aqara-cli
+```
+
+Upgrades land via `brew update && brew upgrade aqara-cli`.
+
+### pipx (any OS with Python 3.10+)
+
 ```bash
 pipx install git+https://github.com/omarshahine/aqara-cli.git
 ```
 
-Or for development:
+### For development
 
 ```bash
 git clone https://github.com/omarshahine/aqara-cli && cd aqara-cli
