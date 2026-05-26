@@ -66,6 +66,7 @@ def test_help_lists_every_command() -> None:
         ["auth", "set-app", "--help"],
         ["auth", "request-code", "--help"],
         ["auth", "get-token", "--help"],
+        ["auth", "browser-flow", "--help"],
         ["auth", "install-refresher", "--help"],
         ["auth", "uninstall-refresher", "--help"],
         ["auth", "status", "--help"],

@@ -541,6 +541,210 @@ def auth_get_token(account, auth_code, account_type, no_save):
     })
 
 
+@auth.command("browser-flow")
+@click.option(
+    "--port",
+    type=int,
+    default=8765,
+    show_default=True,
+    help="Local port for the OAuth callback listener.",
+)
+@click.option(
+    "--no-save",
+    is_flag=True,
+    help="Don't write tokens to credentials.json — just print them.",
+)
+@click.option(
+    "--no-browser",
+    is_flag=True,
+    help="Don't auto-open the browser — print the URL and wait for you to "
+         "visit it manually (useful over SSH).",
+)
+def auth_browser_flow(port, no_save, no_browser):
+    """Bootstrap tokens via Aqara's OAuth web flow.
+
+    **This is the path most users need** — Aqara's email-code flow
+    (`request-code` / `get-token`) is unreliable. The browser flow is
+    documented at developer.aqara.com under "Interface Authorization" and
+    works consistently.
+
+    Walks you through:
+
+      1. Starts a local HTTPS callback listener on http://localhost:<port>/callback.
+      2. Opens https://open-<region>.aqara.com/v3.0/open/authorize in your browser.
+      3. You sign in (if needed) and click Authorize.
+      4. Aqara redirects back to the local listener with `?code=...`.
+      5. The code is exchanged for AccessToken + RefreshToken via the
+         /v3.0/open/access_token endpoint.
+      6. Tokens are written to credentials.json (or printed with --no-save).
+
+    **Prerequisite:** in your developer.aqara.com app settings, add
+    `http://localhost:<port>/callback` as an authorized Redirect URI. Without
+    that, Aqara rejects the authorize request with an unhelpful generic error.
+    """
+    import http.server
+    import secrets as _secrets
+    import urllib.parse
+    import webbrowser
+    from urllib.request import Request, urlopen
+
+    env = api._load_env()
+    app_id = env.get("AQARA_OPEN_APP_ID")
+    app_key = env.get("AQARA_OPEN_APP_KEY")
+    region = env.get("AQARA_OPEN_REGION", "usa")
+    if not app_id or not app_key:
+        raise click.ClickException(
+            "missing AQARA_OPEN_APP_ID / AQARA_OPEN_APP_KEY — run "
+            "`aqara auth set-app ...` first."
+        )
+    domain = api.REGION_DOMAINS.get(region.lower())
+    if not domain:
+        raise click.ClickException(f"unknown region {region!r}")
+
+    redirect_uri = f"http://localhost:{port}/callback"
+
+    captured: dict[str, str] = {}
+
+    class CallbackHandler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            url = urllib.parse.urlparse(self.path)
+            if url.path != "/callback":
+                self.send_response(404)
+                self.end_headers()
+                return
+            params = urllib.parse.parse_qs(url.query)
+            captured["code"] = (params.get("code") or [""])[0]
+            captured["state"] = (params.get("state") or [""])[0]
+            captured["error"] = (params.get("error") or [""])[0]
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            msg = (
+                "Authorization received. You can close this tab."
+                if captured.get("code") else
+                f"Authorization failed: {captured}"
+            )
+            self.wfile.write(f"<html><body><h2>{msg}</h2></body></html>".encode())
+
+        def log_message(self, fmt, *args):  # silence
+            return
+
+    try:
+        srv = http.server.HTTPServer(("127.0.0.1", port), CallbackHandler)
+    except OSError as exc:
+        raise click.ClickException(
+            f"can't bind to port {port} ({exc}). Pass --port <other> or stop "
+            "whatever's using it."
+        ) from exc
+
+    state = _secrets.token_hex(8)
+    auth_url = (
+        f"https://{domain}/v3.0/open/authorize?"
+        + urllib.parse.urlencode({
+            "client_id": app_id,
+            "response_type": "code",
+            "redirect_uri": redirect_uri,
+            "state": state,
+        })
+    )
+
+    click.echo(f"Authorize URL:\n  {auth_url}\n", err=True)
+    click.echo(
+        f"After you click Authorize, your browser will redirect to {redirect_uri}\n"
+        "which this command is listening on. Waiting...\n",
+        err=True,
+    )
+    click.echo(
+        "IMPORTANT: make sure your dev app at developer.aqara.com has\n"
+        f"  {redirect_uri}\n"
+        "registered as an authorized Redirect URI. Without that the\n"
+        "authorize page will show a generic error.\n",
+        err=True,
+    )
+
+    if not no_browser:
+        webbrowser.open(auth_url)
+
+    srv.handle_request()
+    srv.server_close()
+
+    if captured.get("state") != state:
+        raise click.ClickException(
+            f"state mismatch — expected {state!r}, got {captured.get('state')!r}"
+        )
+    if captured.get("error"):
+        raise click.ClickException(f"authorize error: {captured['error']}")
+    code = captured.get("code")
+    if not code:
+        raise click.ClickException("no code captured from the callback")
+
+    click.echo(f"Got authorization code (first 8: {code[:8]}…)", err=True)
+    click.echo("Exchanging for access token...", err=True)
+
+    token_url = f"https://{domain}/v3.0/open/access_token"
+    form = urllib.parse.urlencode({
+        "client_id": app_id,
+        "client_secret": app_key,
+        "redirect_uri": redirect_uri,
+        "grant_type": "authorization_code",
+        "code": code,
+    }).encode("utf-8")
+    req = Request(
+        token_url,
+        data=form,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    try:
+        with urlopen(req, timeout=15) as resp:
+            raw = resp.read()
+    except Exception as exc:
+        raise click.ClickException(f"token exchange failed: {exc}") from exc
+
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except Exception as exc:
+        raise click.ClickException(
+            f"non-JSON token response: {raw.decode('utf-8', errors='replace')[:400]}"
+        ) from exc
+
+    # Response shape varies: sometimes flat, sometimes {result: {...}}.
+    result = data.get("result") if isinstance(data.get("result"), dict) else data
+    access_token = result.get("accessToken") or result.get("access_token")
+    refresh_token = result.get("refreshToken") or result.get("refresh_token")
+    open_id = result.get("openId") or result.get("open_id") or result.get("openid")
+    expires_in = result.get("expiresIn") or result.get("expires_in")
+
+    if not access_token:
+        raise click.ClickException(f"no access_token in token response: {data}")
+
+    saved = False
+    if not no_save:
+        from . import config as _config
+
+        _config.update_credentials(
+            access_token=access_token,
+            refresh_token=refresh_token,
+            open_id=open_id,
+        )
+        os.environ["AQARA_OPEN_ACCESS_TOKEN"] = access_token
+        if refresh_token:
+            os.environ["AQARA_OPEN_REFRESH_TOKEN"] = refresh_token
+        saved = True
+
+    _json({
+        "expires_in": expires_in,
+        "open_id": open_id,
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "saved_to_credentials_file": saved,
+        "next": (
+            "Run `aqara info` to verify, then `aqara auth install-refresher` "
+            "to keep tokens fresh automatically."
+        ),
+    })
+
+
 @auth.command("install-refresher")
 @click.option(
     "--interval-days",

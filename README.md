@@ -90,34 +90,60 @@ export AQARA_OPEN_REGION="usa"   # one of: usa cn eu ru kr — default: usa
 Env vars **always win** over `credentials.json`. Lower-case variants
 (`aqara_open_app_id`, …) are also accepted for legacy shell setups.
 
-### Step 3 — Bootstrap user tokens (two-step OAuth)
+### Step 3 — Bootstrap user tokens (browser OAuth — recommended)
 
-Aqara's API uses per-user OAuth on top of the app credentials. The CLI ships
-the two intents needed:
+Aqara's API uses per-user OAuth on top of the app credentials. There are two
+ways to get the first set of tokens; **the browser flow is the one that
+actually works.** Aqara's email-code flow looks simpler in the docs but
+their email delivery is unreliable — many users (including this project's
+author) never receive the code. Skip the frustration:
 
-```bash
-# Step 3a: Aqara emails you a verification code
-aqara auth request-code your-email@example.com
+**Prerequisite, one-time, easy to miss:** In your developer.aqara.com app
+settings, add `http://localhost:8765/callback` as an authorized Redirect URI.
+Without it, the authorize page shows a generic error and you'll think the
+whole thing is broken.
 
-# Check your inbox (and spam). You'll get a 6-digit code.
-
-# Step 3b: exchange the code for AccessToken + RefreshToken
-aqara auth get-token your-email@example.com 123456
-```
-
-Default behavior writes the returned `access_token` + `refresh_token` +
-`open_id` to `credentials.json`. To skip persistence (e.g. you want to copy
-them into your own secret manager):
+Then:
 
 ```bash
-aqara auth get-token --no-save your-email@example.com 123456
-# … then export AQARA_OPEN_ACCESS_TOKEN + AQARA_OPEN_REFRESH_TOKEN yourself.
+aqara auth browser-flow
 ```
+
+What happens:
+
+1. The CLI starts a local HTTP listener on `localhost:8765`.
+2. Your browser opens `https://open-<region>.aqara.com/v3.0/open/authorize?...`.
+3. You sign in with the same Aqara account that owns your homes/devices.
+4. You click **Authorize**; Aqara redirects to `localhost:8765/callback?code=...`.
+5. The CLI captures the code, exchanges it for an AccessToken + RefreshToken
+   at `/v3.0/open/access_token`, and writes both to credentials.json.
+
+Done. `aqara info` should now show `auth_ok: true`.
+
+Flags worth knowing:
+- `--port <N>` if 8765 is taken (you'll need to re-register the redirect URI
+  with the new port on the developer portal).
+- `--no-browser` to print the URL without opening it (useful over SSH —
+  forward the port locally, then click the link).
+- `--no-save` to print tokens without writing credentials.json (for users
+  who keep secrets in their own manager).
 
 Token lifetimes (as of 2026-05):
 
-- **AccessToken**: 7 days (or whatever you passed via `--validity`).
+- **AccessToken**: 7 days (or whatever you passed via `--validity` on the
+  email-code path; the browser flow uses Aqara's default).
 - **RefreshToken**: 30 days, rotated on every successful refresh.
+
+**Fallback — email verification code** (only if browser flow truly won't
+work for you, e.g. no browser available at all):
+
+```bash
+aqara auth request-code your-email@example.com        # Aqara emails a code
+aqara auth get-token your-email@example.com 123456    # exchange it
+```
+
+In practice, the email is slow, lands in spam, or never arrives. If you're
+seeing nothing after 5 minutes, switch to `aqara auth browser-flow`.
 
 ### Step 4 — Verify
 
@@ -228,17 +254,22 @@ re-discover them:
 - `config.position.delete` requires singular `positionId`. The plural
   `positionIds: [list]` returns 302.
 
-## Alternative auth path
+## Why the browser flow is the default
 
-If the email verification-code flow doesn't deliver (sometimes Aqara's
-emails get caught by aggressive spam filters, or your account is keyed by
-phone instead of email), the chief-of-staff plugin in
-[omarshahine/omarshahine-plugins](https://github.com/omarshahine/omarshahine-plugins)
-has `aqara_oauth.py`, which starts a local HTTP listener and walks you
-through Aqara's browser-based OAuth flow. It produces the same
-`access_token` + `refresh_token` that `aqara auth get-token` produces;
-once you have them, the CLI works identically. (May land in this repo as
-`aqara auth browser-flow` in a future release.)
+Aqara documents both paths as equivalent; in practice the email-code flow
+is unreliable enough that I built this CLI's onboarding around the browser
+flow. The reasons people get stuck on email-code:
+
+- Aqara's transactional email frequently lands in spam or doesn't arrive
+  at all.
+- The code is rate-limited and there's no clear per-account dashboard for
+  retries — you just sit there hoping.
+- It hides errors. The browser flow surfaces "your redirect URI isn't
+  registered" or "wrong region" within seconds; the email flow just stays
+  silent.
+
+`aqara auth browser-flow` is a verbatim port of the script that successfully
+bootstrapped this account when nothing else worked.
 
 ## Troubleshooting
 

@@ -6,6 +6,26 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-05-26
+
+### Added
+
+- `aqara auth browser-flow` — bootstrap tokens via Aqara's OAuth web flow.
+  Starts a local callback listener, opens
+  `open-<region>.aqara.com/v3.0/open/authorize` in your browser, captures
+  the redirect, exchanges the code at `/v3.0/open/access_token`, and writes
+  the resulting tokens to credentials.json.
+- Flags: `--port` (override 8765), `--no-browser` (print URL only, useful
+  over SSH), `--no-save` (print tokens, skip persistence).
+
+### Changed
+
+- README reordered: browser-flow is now the **primary** documented bootstrap
+  path. The email verification-code flow (`request-code` + `get-token`) is
+  documented as a fallback because Aqara's email delivery is unreliable
+  enough that several users have reported the code never arriving. The
+  fallback path stays in the CLI; new users just won't trip over it first.
+
 ## [0.2.0] - 2026-05-26
 
 ### Added
@@ -52,6 +72,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   - `config.position.delete` requires singular `positionId`
     (`positionIds: [list]` returns 302).
 
-[Unreleased]: https://github.com/omarshahine/aqara-cli/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/omarshahine/aqara-cli/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/omarshahine/aqara-cli/releases/tag/v0.3.0
 [0.2.0]: https://github.com/omarshahine/aqara-cli/releases/tag/v0.2.0
 [0.1.0]: https://github.com/omarshahine/aqara-cli/releases/tag/v0.1.0

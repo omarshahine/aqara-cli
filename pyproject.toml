@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "aqara-cli"
-version = "0.2.0"
+version = "0.3.0"
 description = "Command-line client for the Aqara Open Cloud API (homes, devices, rooms, scenes)."
 readme = "README.md"
 license = { text = "MIT" }
