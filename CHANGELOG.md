@@ -6,6 +6,27 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-05-26
+
+### Added
+
+- `aqara auth` command group, covering the full token bootstrap +
+  recurring-refresher lifecycle:
+  - `auth set-app` — persist AppId/AppKey/KeyId/region to credentials.json.
+  - `auth request-code <account>` — step 1 of OAuth (Aqara emails a code).
+  - `auth get-token <account> <code>` — step 2 (exchange for AccessToken +
+    RefreshToken; persisted to credentials.json by default).
+  - `auth install-refresher` — write + load a launchd plist that runs
+    `aqara refresh` every 5 days. Logs to ~/Library/Logs/aqara-cli/.
+  - `auth uninstall-refresher` / `auth status` — manage the launchd job.
+- `~/.config/aqara-cli/credentials.json` (mode 600) as a secondary credential
+  source. Env vars still take precedence; credentials.json fills in any
+  missing values and receives the refreshed access/refresh tokens so a
+  recurring refresher works without env-var rewriting.
+- Comprehensive getting-started in the README walking through developer
+  portal signup, app creation, region selection, OAuth bootstrap, and
+  launchd install.
+
 ## [0.1.0] - 2026-05-26
 
 ### Added
@@ -31,5 +52,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   - `config.position.delete` requires singular `positionId`
     (`positionIds: [list]` returns 302).
 
-[Unreleased]: https://github.com/omarshahine/aqara-cli/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/omarshahine/aqara-cli/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/omarshahine/aqara-cli/releases/tag/v0.2.0
 [0.1.0]: https://github.com/omarshahine/aqara-cli/releases/tag/v0.1.0

@@ -68,20 +68,41 @@ ENV_KEYS = (
     "AQARA_OPEN_REGION",
 )
 
+# Mapping from env-var name to credentials.json key.
+ENV_TO_CRED = {
+    "AQARA_OPEN_APP_ID":         "app_id",
+    "AQARA_OPEN_APP_KEY":        "app_key",
+    "AQARA_OPEN_KEY_ID":         "key_id",
+    "AQARA_OPEN_ACCESS_TOKEN":   "access_token",
+    "AQARA_OPEN_REFRESH_TOKEN":  "refresh_token",
+    "AQARA_OPEN_REGION":         "region",
+}
+
 
 class AqaraError(RuntimeError):
     """Raised for missing config or non-zero API response codes."""
 
 
 def _load_env() -> dict[str, str]:
-    """Read Aqara credentials from the environment.
+    """Resolve Aqara credentials.
 
-    Each key is checked in both upper-case and lower-case form (some users
-    have legacy lowercase exports from earlier tooling).
+    Lookup order per key:
+      1. Process environment, upper-case (``AQARA_OPEN_APP_ID``)
+      2. Process environment, lower-case (``aqara_open_app_id``)
+      3. ``~/.config/aqara-cli/credentials.json`` (lower-case key)
+
+    Env vars always win, so users with chezmoi/1Password-managed env vars are
+    unaffected by the existence of ``credentials.json``.
     """
+    # Local import avoids a config↔api circular import at module load time.
+    from . import config as _config
+
+    creds_file = _config.load_credentials()
     env: dict[str, str] = {}
     for k in ENV_KEYS:
         v = os.environ.get(k) or os.environ.get(k.lower())
+        if not v:
+            v = creds_file.get(ENV_TO_CRED[k])
         if v:
             env[k] = v
     return env
@@ -203,11 +224,24 @@ def refresh_access_token(*, verbose: bool = False) -> dict:
     result = resp.get("result") or {}
     new_at = result.get("accessToken")
     new_rt = result.get("refreshToken")
+    open_id = result.get("openId")
     if not new_at:
         raise AqaraError(f"refresh returned no accessToken: {result}")
     os.environ["AQARA_OPEN_ACCESS_TOKEN"] = new_at
     if new_rt:
         os.environ["AQARA_OPEN_REFRESH_TOKEN"] = new_rt
+
+    # If a credentials.json exists, write the new tokens back so a recurring
+    # refresher (and the next shell) sees them. This is a no-op for users who
+    # only use env vars and don't have a credentials.json.
+    from . import config as _config
+
+    if _config.CREDENTIALS_FILE.exists():
+        _config.update_credentials(
+            access_token=new_at,
+            refresh_token=new_rt,
+            open_id=open_id,
+        )
     return resp
 
 
@@ -259,6 +293,66 @@ def ensure_ok(resp: dict, action: str = "call") -> dict:
 # ---------------------------------------------------------------------------
 # Typed wrappers
 # ---------------------------------------------------------------------------
+
+def request_auth_code(
+    account: str,
+    *,
+    account_type: int = 0,
+    validity: str = "30d",
+    verbose: bool = False,
+) -> dict:
+    """Step 1 of the two-step token bootstrap.
+
+    Calls ``config.auth.getAuthCode``: Aqara emails (or SMSes) a one-time
+    verification code to ``account``.
+
+    ``account_type``:
+        0 = email (default)
+        1 = phone (China)
+        2 = phone (international)
+
+    ``validity`` is the requested access-token lifetime returned by the
+    follow-up ``getToken`` call. Aqara documents values like ``1h``, ``7d``,
+    ``30d``.
+
+    This call requires AppId/AppKey/KeyId to be set but does NOT require an
+    existing access token.
+    """
+    return ensure_ok(
+        call(
+            "config.auth.getAuthCode",
+            {"account": account, "accountType": account_type, "accessTokenValidity": validity},
+            verbose=verbose,
+        ),
+        "request_auth_code",
+    )
+
+
+def exchange_auth_code(
+    account: str,
+    auth_code: str,
+    *,
+    account_type: int = 0,
+    verbose: bool = False,
+) -> dict:
+    """Step 2 of the two-step token bootstrap.
+
+    Calls ``config.auth.getToken`` with the code from ``request_auth_code``.
+    Returns ``{accessToken, refreshToken, expiresIn, openId}`` in
+    ``result``.
+
+    The caller is responsible for persisting the returned tokens (export
+    them, write to a secret manager, etc.).
+    """
+    return ensure_ok(
+        call(
+            "config.auth.getToken",
+            {"authCode": auth_code, "account": account, "accountType": account_type},
+            verbose=verbose,
+        ),
+        "exchange_auth_code",
+    )
+
 
 def query_homes(*, verbose: bool = False) -> list[dict]:
     """List top-level positions (homes)."""

@@ -16,6 +16,7 @@ from aqara_cli.main import cli
 
 
 EXPECTED_COMMANDS = {
+    "auth",
     "call",
     "device-status",
     "devices",
@@ -61,6 +62,13 @@ def test_help_lists_every_command() -> None:
         ["rooms", "--help"],
         ["scene-run", "--help"],
         ["scenes", "--help"],
+        ["auth", "--help"],
+        ["auth", "set-app", "--help"],
+        ["auth", "request-code", "--help"],
+        ["auth", "get-token", "--help"],
+        ["auth", "install-refresher", "--help"],
+        ["auth", "uninstall-refresher", "--help"],
+        ["auth", "status", "--help"],
     ],
 )
 def test_help_for_every_command(argv: list[str]) -> None:

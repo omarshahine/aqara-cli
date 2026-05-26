@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 
 import click
 
@@ -398,6 +399,308 @@ def call(intent, data_json, verbose):
     except json.JSONDecodeError as exc:
         raise click.BadParameter(f"--data must be valid JSON: {exc}") from exc
     _json(api.call(intent, data, verbose=verbose))
+
+
+# ---------------------------------------------------------------------------
+# auth — bootstrap + recurring-refresher install
+# ---------------------------------------------------------------------------
+@cli.group()
+def auth():
+    """One-time bootstrap and recurring-refresher management.
+
+    First-time setup is a two-step OAuth flow:
+
+      1. `aqara auth request-code <your-email>` — Aqara emails a code.
+      2. `aqara auth get-token <your-email> <code>` — exchange for tokens.
+
+    After that, install the launchd refresher so the tokens never expire:
+
+      3. `aqara auth install-refresher`
+    """
+
+
+@auth.command("set-app")
+@click.option("--app-id", required=True, help="AppId from developer.aqara.com")
+@click.option("--app-key", required=True, help="AppKey from developer.aqara.com")
+@click.option("--key-id", required=True, help="KeyId from developer.aqara.com")
+@click.option(
+    "--region",
+    type=click.Choice(["usa", "cn", "eu", "ru", "kr"]),
+    default="usa",
+    show_default=True,
+)
+def auth_set_app(app_id, app_key, key_id, region):
+    """Persist your developer-app credentials to ~/.config/aqara-cli/credentials.json.
+
+    Alternative to setting AQARA_OPEN_APP_ID/_KEY/_ID/_REGION as env vars.
+    """
+    from . import config as _config
+
+    _config.update_credentials(
+        app_id=app_id, app_key=app_key, key_id=key_id, region=region,
+    )
+    _json({
+        "saved_to": str(_config.CREDENTIALS_FILE),
+        "fields": ["app_id", "app_key", "key_id", "region"],
+    })
+
+
+@auth.command("request-code")
+@click.argument("account")
+@click.option(
+    "--account-type",
+    type=int,
+    default=0,
+    show_default=True,
+    help="0 = email, 1 = phone (China), 2 = phone (international).",
+)
+@click.option(
+    "--validity",
+    default="30d",
+    show_default=True,
+    help="Requested access-token lifetime (e.g. 1h, 7d, 30d). Maximum is "
+         "controlled by your app's settings at developer.aqara.com.",
+)
+def auth_request_code(account, account_type, validity):
+    """Step 1 of the OAuth bootstrap. Aqara emails/SMSes a verification code
+    to ``account``.
+
+    Example:
+        aqara auth request-code you@example.com
+    """
+    resp = api.request_auth_code(account, account_type=account_type, validity=validity)
+    _json({
+        "account": account,
+        "sent": True,
+        "next": "Run `aqara auth get-token {account} <code>` with the code "
+                "you receive.".format(account=account),
+        "response": resp,
+    })
+
+
+@auth.command("get-token")
+@click.argument("account")
+@click.argument("auth_code")
+@click.option(
+    "--account-type",
+    type=int,
+    default=0,
+    show_default=True,
+)
+@click.option(
+    "--no-save",
+    is_flag=True,
+    help="Don't write tokens to credentials.json — just print them so you "
+         "can export them yourself.",
+)
+def auth_get_token(account, auth_code, account_type, no_save):
+    """Step 2 of the OAuth bootstrap. Exchange the verification code for
+    AccessToken + RefreshToken and persist them to credentials.json.
+
+    Example:
+        aqara auth get-token you@example.com 123456
+    """
+    resp = api.exchange_auth_code(account, auth_code, account_type=account_type)
+    result = resp.get("result") or {}
+    access_token = result.get("accessToken")
+    refresh_token = result.get("refreshToken")
+    expires_in = result.get("expiresIn")
+    open_id = result.get("openId")
+    if not access_token:
+        raise click.ClickException(
+            f"no accessToken in response result: {result}"
+        )
+
+    saved = False
+    if not no_save:
+        from . import config as _config
+
+        _config.update_credentials(
+            access_token=access_token,
+            refresh_token=refresh_token,
+            open_id=open_id,
+        )
+        os.environ["AQARA_OPEN_ACCESS_TOKEN"] = access_token
+        if refresh_token:
+            os.environ["AQARA_OPEN_REFRESH_TOKEN"] = refresh_token
+        saved = True
+
+    _json({
+        "account": account,
+        "expires_in": expires_in,
+        "open_id": open_id,
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "saved_to_credentials_file": saved,
+        "next": (
+            "Run `aqara auth install-refresher` to keep tokens fresh "
+            "automatically." if saved else
+            "Export AQARA_OPEN_ACCESS_TOKEN + AQARA_OPEN_REFRESH_TOKEN to "
+            "your shell, then run `aqara auth install-refresher`."
+        ),
+    })
+
+
+@auth.command("install-refresher")
+@click.option(
+    "--interval-days",
+    type=float,
+    default=5.0,
+    show_default=True,
+    help="How often to refresh. Aqara tokens are 7d (access) / 30d (refresh) "
+         "by default; 5 days keeps both well inside their windows.",
+)
+@click.option(
+    "--label",
+    default="com.shahine.aqara-cli.refresh",
+    show_default=True,
+    help="launchd job label.",
+)
+def auth_install_refresher(interval_days, label):
+    """Install a macOS launchd agent that runs ``aqara refresh`` periodically.
+
+    Writes ``~/Library/LaunchAgents/<label>.plist`` and loads it. The agent
+    runs as your user and uses the same credentials.json the CLI does, so
+    refreshed tokens persist there for the next shell.
+
+    Logs land at ``~/Library/Logs/aqara-cli/refresh.log``.
+
+    Only supported on macOS.
+    """
+    import shutil
+    import subprocess
+    import sys as _sys
+
+    if _sys.platform != "darwin":
+        raise click.ClickException(
+            "install-refresher is macOS-only (uses launchd). On Linux, set up "
+            "a systemd timer; on other systems, use cron. Both should call "
+            "`aqara refresh`."
+        )
+
+    aqara_path = shutil.which("aqara")
+    if not aqara_path:
+        raise click.ClickException(
+            "could not locate the `aqara` executable on PATH — install with "
+            "`pipx install aqara-cli` first."
+        )
+
+    log_dir = Path.home() / "Library" / "Logs" / "aqara-cli"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / "refresh.log"
+
+    plist_dir = Path.home() / "Library" / "LaunchAgents"
+    plist_dir.mkdir(parents=True, exist_ok=True)
+    plist_path = plist_dir / f"{label}.plist"
+
+    interval_seconds = int(interval_days * 86400)
+    plist_xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{label}</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>{aqara_path}</string>
+        <string>refresh</string>
+    </array>
+
+    <!-- Refresh every {interval_days} day(s). Default Aqara token lifetimes
+         are 7d (access) / 30d (refresh, rotated on each refresh), so 5d
+         keeps both well inside their windows. -->
+    <key>StartInterval</key>
+    <integer>{interval_seconds}</integer>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+
+    <key>StandardOutPath</key>
+    <string>{log_file}</string>
+    <key>StandardErrorPath</key>
+    <string>{log_file}</string>
+</dict>
+</plist>
+"""
+    plist_path.write_text(plist_xml)
+
+    # Unload first in case it's already loaded under the same label.
+    subprocess.run(
+        ["launchctl", "unload", str(plist_path)],
+        check=False, capture_output=True,
+    )
+    result = subprocess.run(
+        ["launchctl", "load", str(plist_path)],
+        check=False, capture_output=True, text=True,
+    )
+    loaded = result.returncode == 0
+    _json({
+        "installed": loaded,
+        "plist_path": str(plist_path),
+        "label": label,
+        "interval_seconds": interval_seconds,
+        "interval_days": interval_days,
+        "log_file": str(log_file),
+        "launchctl_output": (result.stdout + result.stderr).strip() or None,
+    })
+
+
+@auth.command("uninstall-refresher")
+@click.option(
+    "--label",
+    default="com.shahine.aqara-cli.refresh",
+    show_default=True,
+)
+def auth_uninstall_refresher(label):
+    """Unload and remove the launchd refresher installed via install-refresher."""
+    import subprocess
+
+    plist_path = Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"
+    if not plist_path.exists():
+        _json({"removed": False, "reason": "plist not found", "path": str(plist_path)})
+        return
+    subprocess.run(
+        ["launchctl", "unload", str(plist_path)],
+        check=False, capture_output=True,
+    )
+    plist_path.unlink()
+    _json({"removed": True, "path": str(plist_path), "label": label})
+
+
+@auth.command("status")
+def auth_status():
+    """Show whether the launchd refresher is loaded + the last log lines."""
+    import subprocess
+
+    label = "com.shahine.aqara-cli.refresh"
+    log_file = Path.home() / "Library" / "Logs" / "aqara-cli" / "refresh.log"
+    plist_path = Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"
+
+    listed = subprocess.run(
+        ["launchctl", "list", label],
+        check=False, capture_output=True, text=True,
+    )
+    last_log = ""
+    if log_file.exists():
+        try:
+            tail = log_file.read_text().splitlines()[-20:]
+            last_log = "\n".join(tail)
+        except Exception:
+            pass
+
+    _json({
+        "label": label,
+        "plist_exists": plist_path.exists(),
+        "plist_path": str(plist_path),
+        "log_file": str(log_file),
+        "loaded": listed.returncode == 0,
+        "launchctl_output": listed.stdout.strip() or None,
+        "log_tail": last_log,
+    })
 
 
 # ---------------------------------------------------------------------------
